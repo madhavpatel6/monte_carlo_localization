@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 from namedlist import namedlist
 import math
 import matplotlib.pyplot as plt
@@ -5,12 +6,14 @@ import random
 import warnings
 import numpy
 import scipy.spatial
-
+import rospy
+from nav_msgs.msg import OccupancyGrid
+import sensor_msgs.point_cloud2 as PCL
+from sensor_msgs.msg import PointCloud2
 warnings.filterwarnings('ignore')
 
 Belief = namedlist('Belief', 'x y theta')
 SampleSet = namedlist('Sample', 'beliefs probabilities')
-
 
 class Action:
     def __init__(self):
@@ -19,6 +22,11 @@ class Action:
 
 
 def main():
+    rospy.init_node('mcl', anonymous=True)
+    p = rospy.Publisher('/mcl/map', PointCloud2, queue_size=10)
+    map = MapSeverHelper.convert_occupancygrid_to_map()
+    pcloud = MapSeverHelper.list_to_pointcloud2(map, 'odom')
+    p.publish(pcloud)
     previous_beliefs = 5*[Belief(0, 0, 0)]
     plt.scatter(0, 0, color='black')
     probability = len(previous_beliefs)*[1/len(previous_beliefs)]
@@ -32,6 +40,27 @@ def main():
         print('Moving to ', x, y, theta)
         theta *= math.pi/180
         sp = imp.mcl(previous_sample=sp, motion=Belief(x, y, theta), sensor_data=sensor_data)
+
+class MapSeverHelper():
+    @staticmethod
+    def convert_occupancygrid_to_map():
+        data = rospy.wait_for_message('/map', OccupancyGrid)
+        map = []
+        for i in range(0, data.info.height):
+            for j in range(0, data.info.width):
+                if data.data[(i)*data.info.width + j] >= 65:
+                    map_x = j * data.info.resolution + data.info.origin.position.x
+                    map_y = i * data.info.resolution + data.info.origin.position.y
+                    map.append([map_x, map_y, 0])
+        return map
+
+    @staticmethod
+    def list_to_pointcloud2(points, frame):
+        pcloud = PointCloud2()
+        pcloud = PCL.create_cloud_xyz32(pcloud.header, points)
+        pcloud.header.stamp = rospy.Time.now()
+        pcloud.header.frame_id = frame
+        return pcloud
 
 
 class MonteCarloLocalization:
@@ -138,6 +167,7 @@ class MonteCarloLocalization:
         plt.axis('scaled')
         plt.waitforbuttonpress()
         return q
+
     '''
         sensor_update
 
