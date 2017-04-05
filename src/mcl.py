@@ -31,7 +31,7 @@ class Localizer:
         self.new_odom = None
         self.old_odom = None
         self.new_scan = None
-        self.sample_size = 1000
+        self.sample_size = 5000
         self.mcl_complete = True
         self.rotation_threshold = 0.25
         self.translation_threshold = .1
