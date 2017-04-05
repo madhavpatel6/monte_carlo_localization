@@ -21,13 +21,6 @@ import tf2_sensor_msgs.tf2_sensor_msgs
 Belief = namedlist('Belief', 'x y theta')
 SampleSet = namedlist('Sample', 'beliefs probabilities')
 
-class Motion:
-    def __init__(self):
-        self.previous = Belief(0, 0, 0)
-        self.current = Belief(0, 0, 0)
-    def __str__(self):
-        return str('Previous Pose = ' + str(self.previous) + '\nCurrent Pose = ' + str(self.current))
-
 def main():
     rospy.init_node('mcl', anonymous=True)
     lc = Localizer()
@@ -38,7 +31,7 @@ class Localizer:
         self.new_odom = None
         self.old_odom = None
         self.new_scan = None
-        self.sample_size = 5000
+        self.sample_size = 1000
         self.mcl_complete = True
         self.rotation_threshold = 0.25
         self.translation_threshold = .1
@@ -51,8 +44,6 @@ class Localizer:
             if self.old_odom is None:
                 self.old_odom = self.new_odom
                 self.new_odom = None
-
-
 
     def localize(self):
         p = rospy.Publisher('/mcl/map', PointCloud2, queue_size=10)
@@ -91,7 +82,8 @@ class Localizer:
                 self.mcl_complete = False
                 motion = self.create_action(self.old_odom, self.new_odom)
                 rospy.loginfo('Running MCL')
-                sp = inst.mcl(previous_sample=sp, motion=motion, sensor_data=self.new_scan)
+                #sp = inst.mcl(previous_sample=sp, motion=motion, sensor_data=self.new_scan)
+                sp = inst.augmented_mcl(previous_sample=sp, motion=motion, sensor_data=self.new_scan)
                 self.publish_sample_set(sp_publisher, sp.beliefs)
                 # Convert
                 self.old_odom = self.new_odom
@@ -106,7 +98,7 @@ class Localizer:
             dx = self.new_odom.position.x - self.old_odom.position.x
             dy = self.new_odom.position.y - self.old_odom.position.y
 
-            if (dx ** 2 + dy ** 2) >= self.translation_threshold ** 2:
+            if (dx * dx + dy * dy) >= self.translation_threshold * self.translation_threshold:
                 return True
             q = [self.new_odom.orientation.x, self.new_odom.orientation.y,
                  self.new_odom.orientation.z, self.new_odom.orientation.w]
@@ -119,7 +111,6 @@ class Localizer:
             if old_yaw < 0:
                 old_yaw += 2 * math.pi
 
-            # print('yaw', new_yaw*180/3.14)
             dyaw = abs(new_yaw - old_yaw) * 180 / math.pi
             if dyaw > 180:
                 dyaw = 360 - dyaw
@@ -144,17 +135,12 @@ class Localizer:
         return sp
 
     def create_action(self, old, new):
-        a = Motion()
-        a.previous.x = old.position.x
-        a.previous.y = old.position.y
-        a.previous.theta = tf.transformations.euler_from_quaternion(
-            [old.orientation.x, old.orientation.y, old.orientation.z, old.orientation.w])[2]
-
-        a.current.x = new.position.x
-        a.current.y = new.position.y
-        a.current.theta = tf.transformations.euler_from_quaternion(
-            [new.orientation.x, new.orientation.y, new.orientation.z, new.orientation.w])[2]
-        return a
+        previous_theta = tf.transformations.euler_from_quaternion([old.orientation.x, old.orientation.y, old.orientation.z, old.orientation.w])[2]
+        current_theta = tf.transformations.euler_from_quaternion([new.orientation.x, new.orientation.y, new.orientation.z, new.orientation.w])[2]
+        motion = [math.atan2(new.position.y - old.position.y, new.position.x - old.position.x) - previous_theta,
+             math.sqrt((new.position.x - old.position.x) ** 2 + (new.position.y - old.position.y) ** 2)]
+        motion.append(current_theta - previous_theta - motion[0])
+        return motion
 
 
 class MonteCarloLocalization:
@@ -174,23 +160,20 @@ class MonteCarloLocalization:
         self.sigma_hit = 0.2
         self.z_rand = 0.005
         self.z_max = 1
-        self.alpha_slow = 0.001
-        self.alpha_fast = 0.1
+        self.alpha_slow = 0.05
+        self.alpha_fast = 0.2
         self.w_slow = 0
         self.w_fast = 0
 
     def mcl(self, previous_sample, motion, sensor_data):
         samples_bar = SampleSet([], [])
-        rospy.loginfo('Beginning to iterate through previous sample')
         length = len(previous_sample.beliefs)
         for i in range(length):
             new_belief = self.sample_motion_model_odometry(motion, previous_sample.beliefs[i])
             weight = self.likelihood_field_range_finder_model(sensor_data=sensor_data, pose=new_belief)
-            #weight *= previous_sample.probabilities[i]
             samples_bar.beliefs.append(new_belief)
             samples_bar.probabilities.append(weight)
         # Normalize probabilities
-        rospy.loginfo('Normalizing new samples')
         total = sum(samples_bar.probabilities)
         if total > 0:
             probability_factor = 1 / sum(samples_bar.probabilities)
@@ -200,40 +183,21 @@ class MonteCarloLocalization:
             for i in range(length):
                 samples_bar.probabilities[i] = 1 / length
 
-        rospy.loginfo('Drawing from new samples')
-        '''new_samples = SampleSet(beliefs=[], probabilities=[])
-        # Draw from samples from samples_bar with new weights
-        _M = 1.0 / length
-        r = random.uniform(0,_M)
-        c = samples_bar.probabilities[0]
-        i = 0
-        for m in range(length):
-            U = r + m * _M
-            while U > c:
-                i += 1
-                c += samples_bar.probabilities[i]
-            new_samples.beliefs.append(samples_bar.beliefs[i])
-            new_samples.probabilities.append(samples_bar.probabilities[i])'''
         new_samples_indices = numpy.random.choice(a=length, size=length, p=samples_bar.probabilities)
         new_samples = SampleSet(beliefs=[], probabilities=[])
         for i in new_samples_indices:
             new_samples.beliefs.append(samples_bar.beliefs[i])
             new_samples.probabilities.append(samples_bar.probabilities[i])
-        #sys.exit()
         return new_samples
 
     def augmented_mcl(self, previous_sample, motion, sensor_data):
         samples_bar = SampleSet([], [])
-        rospy.loginfo('Beginning to iterate through previous sample')
         length = len(previous_sample.beliefs)
         for i in range(length):
             new_belief = self.sample_motion_model_odometry(motion, previous_sample.beliefs[i])
             weight = self.likelihood_field_range_finder_model(sensor_data=sensor_data, pose=new_belief)
-            #weight *= previous_sample.probabilities[i]
             samples_bar.beliefs.append(new_belief)
             samples_bar.probabilities.append(weight)
-        # Normalize probabilities
-        rospy.loginfo('Normalizing new samples')
         total = sum(samples_bar.probabilities)
         w_avg = 0
         if total > 0:
@@ -241,31 +205,37 @@ class MonteCarloLocalization:
             for i in range(length):
                 w_avg += samples_bar.probabilities[i]
                 samples_bar.probabilities[i] *= probability_factor
-            # Update values of w_slow w_fast
+
             if self.w_slow != 0:
                 self.w_slow += self.alpha_slow * (w_avg - self.w_slow)
             else:
-                self.w_slow = w_avg
+                self.w_slow = self.alpha_slow * w_avg
 
             if self.w_fast != 0:
                 self.w_fast += self.alpha_fast * (w_avg - self.w_fast)
             else:
-                self.w_fast = w_avg
+                self.w_fast = self.alpha_fast * w_avg
         else:
             for i in range(length):
                 samples_bar.probabilities[i] = 1 / length
-
-        rospy.loginfo('Drawing from new samples')
-        # Draw from samples from samples_bar with new weights
         w_diff = 1.0 - self.w_fast/self.w_slow
-        if w_diff < 0:
-            w_diff = 0
-        new_samples_indices = numpy.random.choice(a=length, size=length, p=samples_bar.probabilities)
+        print('w_avg %0.3f' % w_avg)
+        print('slow %0.3f fast %0.3f w_diff %0.3f' % (self.w_slow, self.w_fast, w_diff))
         new_samples = SampleSet(beliefs=[], probabilities=[])
+        if w_diff > 0:
+
+            ctr = 0
+            for i in range(length):
+                if random.random() < w_diff:
+                    ctr += 1
+                    new_samples.beliefs.append(Belief(random.uniform(self.c_space[0][0], self.c_space[0][1]), random.uniform(self.c_space[1][0], self.c_space[1][1]), random.uniform(-math.pi, math.pi)))
+                    new_samples.probabilities.append(1.0)
+            print('added ', ctr, 'random samples')
+        new_samples_indices = numpy.random.choice(a=length, size=length-len(new_samples.beliefs), p=samples_bar.probabilities)
+
         for i in new_samples_indices:
             new_samples.beliefs.append(samples_bar.beliefs[i])
             new_samples.probabilities.append(samples_bar.probabilities[i])
-        sys.exit()
         return new_samples
 
     '''
@@ -275,12 +245,11 @@ class MonteCarloLocalization:
             This function should move all the belief to an updated location
     '''
 
+
     def sample_motion_model_odometry(self, action, pose):
-        absolute_rot1 = math.atan2(action.current.y - action.previous.y,
-                                   action.current.x - action.previous.x) - action.previous.theta
-        absolute_trans = math.sqrt(
-            (action.current.x - action.previous.x) ** 2 + (action.current.y - action.previous.y) ** 2)
-        absolute_rot2 = action.current.theta - action.previous.theta - absolute_rot1
+        absolute_rot1 = action[0]
+        absolute_trans = action[1]
+        absolute_rot2 = action[2]
         error_rot1 = self.sample(self.alpha1*(absolute_rot1**2) + self.alpha2*(absolute_trans**2))
         error_trans = self.sample(
             self.alpha3 * (absolute_trans ** 2) + self.alpha4 * (absolute_rot1 ** 2) + self.alpha4 * (
@@ -292,8 +261,15 @@ class MonteCarloLocalization:
         x = pose.x + estimate_trans * math.cos(pose.theta + estimate_rot1)
         y = pose.y + estimate_trans * math.sin(pose.theta + estimate_rot1)
         theta = pose.theta + estimate_rot1 + estimate_rot2
-        return Belief(x, y, theta)
-
+        pos = theta <= math.pi
+        neg = theta > -math.pi
+        if pos and neg:
+            return Belief(x, y, theta)
+        elif not neg:
+            theta_n = theta + 2.0*math.pi*math.floor((abs(theta) + math.pi)/(2.0*math.pi))
+        elif not pos:
+            theta_n = theta - 2.0 * math.pi * math.floor((theta + math.pi) / (2.0 * math.pi))
+        return Belief(x, y, theta_n)
 
     '''
         likelihood_field_range_finder_model
@@ -304,37 +280,17 @@ class MonteCarloLocalization:
 
     def likelihood_field_range_finder_model(self, sensor_data, pose):
         q = 1
-       # plt.clf()
-       # plt.ion()
-       # print(pose)
-       # unit_vector = 5*[math.cos(pose.theta), math.sin(pose.theta)]
-       # pointer = [unit_vector[0] + pose.x, unit_vector[1] + pose.y]
-       # plt.annotate(s='', xy=pose[0:2], xytext=pointer, arrowprops=dict(arrowstyle='<-'))
-#        for p in transformed_data:
-#            plt.scatter(p[0], p[0], s=5, c='yellow', lw=0)
-        #plt.show()
         cos_theta = math.cos(pose.theta)
         sin_theta = math.sin(pose.theta)
         for i in range(len(sensor_data)):
-            #global_position = list((numpy.matrix([[pose.x], [pose.y]]) + numpy.matrix([[math.cos(pose.theta), -1.0 * math.sin(pose.theta)],[math.sin(pose.theta), math.cos(pose.theta)]]) * numpy.matrix([[sensor_data[i][0]], [sensor_data[i][1]]])).flat)
-            global_position = [pose.x + cos_theta*sensor_data[i][0] - sin_theta*sensor_data[i][1], pose.y + sin_theta*sensor_data[i][0] + cos_theta*sensor_data[i][1]]
-        #    plt.scatter(sensor_data[i][0], sensor_data[i][1], s=5, c='red', lw=0)
-        #    plt.scatter(global_position[0], global_position[1], s=5, c='yellow', lw=0)
-            #distance, index = self.kdtree.query(global_position, k=1, n_jobs=-1)
-            #p = self.prob(distance, self.sdhit)
-            #factor = (self.zhit * p + self.zrand/self.zmax)
-
-            x, y = int((global_position[0] - self.origin[0])/self.resolution), int((global_position[1] - self.origin[1])/self.resolution)
-            if x >= 0 and x < self.dimensions[0] and y >= 0 and y < self.dimensions[1]:
-   #             print('indices are not valid', x, y)
-                distance = self.likelihood_field[y][x][0]
+            global_position_x, global_position_y = pose.x + cos_theta * sensor_data[i][0] - sin_theta * sensor_data[i][1], pose.y + sin_theta * sensor_data[i][0] + cos_theta * sensor_data[i][1]
+            x, y = int((global_position_x - self.origin[0])/self.resolution), int((global_position_y - self.origin[1])/self.resolution)
+            if 0 <= x < self.dimensions[0] and 0 <= y < self.dimensions[1]:
+                pgaus = self.likelihood_field[y][x]
             else:
-                distance = 1000
-         #       plt.scatter(self.map[self.likelihood_field[y][x][1]][0], self.map[self.likelihood_field[y][x][1]][1], s=5, c='blue', lw=0)
-            p = self.z_hit * self.prob(distance, self.sigma_hit) + random.uniform(0, self.z_rand) #/self.z_max
+                pgaus = 0
+            p = pgaus + random.uniform(0, self.z_rand) #/self.z_max
             q += p*p*p
-       # plt.axis('equal')
-       # plt.waitforbuttonpress()
         return q
 
     def preprocess_map(self):
@@ -353,7 +309,7 @@ class MonteCarloLocalization:
             for x in range(width):
                 global_position = [x * self.resolution + self.origin[0], y * self.resolution + self.origin[1]]
                 distance, index = self.kdtree.query(global_position, k=1)
-                self.likelihood_field[y].append((distance, index))
+                self.likelihood_field[y].append(self.z_hit * self.prob(distance, self.sigma_hit))
         '''
         x_index = []
         y_index = []
