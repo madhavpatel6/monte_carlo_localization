@@ -156,10 +156,10 @@ class MonteCarloLocalization:
         self.alpha2 = 0.001     # Error in rot1/rot2 due to translation
         self.alpha3 = 0.01     # Error in translation due to translation
         self.alpha4 = 0.001    # Error in translation due to rot1/rot2
-        self.z_hit = 0.95
+        self.z_hit = 0.75
         self.sigma_hit = 0.2
-        self.z_rand = 0.005
-        self.z_max = 1
+        self.z_rand = 0.25
+        self.z_max = 1.0
         self.alpha_slow = 0.05
         self.alpha_fast = 0.2
         self.w_slow = 0
@@ -279,7 +279,7 @@ class MonteCarloLocalization:
     '''
 
     def likelihood_field_range_finder_model(self, sensor_data, pose):
-        q = 1
+        q = 1.0
         cos_theta = math.cos(pose.theta)
         sin_theta = math.sin(pose.theta)
         for i in range(len(sensor_data)):
@@ -288,8 +288,10 @@ class MonteCarloLocalization:
             if 0 <= x < self.dimensions[0] and 0 <= y < self.dimensions[1]:
                 pgaus = self.likelihood_field[y][x]
             else:
-                pgaus = 0
-            p = pgaus + random.uniform(0, self.z_rand) #/self.z_max
+                pgaus = self.z_rand/self.z_max
+            #p = pgaus + random.uniform(0, self.z_rand) #/self.z_max
+            p = pgaus
+            #q *= p
             q += p*p*p
         return q
 
@@ -309,7 +311,7 @@ class MonteCarloLocalization:
             for x in range(width):
                 global_position = [x * self.resolution + self.origin[0], y * self.resolution + self.origin[1]]
                 distance, index = self.kdtree.query(global_position, k=1)
-                self.likelihood_field[y].append(self.z_hit * self.prob(distance, self.sigma_hit))
+                self.likelihood_field[y].append(self.z_hit * self.prob(distance, self.sigma_hit) + self.z_rand/self.z_max)
         '''
         x_index = []
         y_index = []
