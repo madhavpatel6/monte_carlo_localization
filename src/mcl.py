@@ -16,13 +16,11 @@ from nav_msgs.msg import Odometry
 warnings.filterwarnings('ignore')
 import tf
 import message_filters
-import sys
-import tf2_sensor_msgs.tf2_sensor_msgs
 Belief = namedlist('Belief', 'x y theta')
 SampleSet = namedlist('Sample', 'beliefs probabilities')
 
 def main():
-    rospy.init_node('mcl', anonymous=True)
+    rospy.init_node('MonteCarloLocalization')
     lc = Localizer()
     lc.localize()
 
@@ -48,7 +46,7 @@ class Localizer:
     def localize(self):
         p = rospy.Publisher('/mcl/map', PointCloud2, queue_size=10)
         sp_publisher = rospy.Publisher('/mcl/beliefs', PointCloud2, queue_size=10)
-
+        rospy.sleep(5)
         map, res = MapSeverHelper.convert_occupancygrid_to_map()
         rospy.loginfo('Received map of length ' + str(len(map)))
 
